@@ -1,7 +1,7 @@
 #include <cstdlib>
 #include <ctime>
 
-#include "core/common/clint.h"
+#include "core/common/real_clint.h"
 #include "elf_loader.h"
 #include "debug_memory.h"
 #include "iss.h"
@@ -68,8 +68,10 @@ int sc_main(int argc, char **argv) {
 	ELFLoader loader(opt.input_program.c_str());
 	SimpleBus<2, 3> bus("SimpleBus");
 	SyscallHandler sys("SyscallHandler");
-	CLINT<1> clint("CLINT");
 	DebugMemoryInterface dbg_if("DebugMemoryInterface");
+
+	std::vector<clint_interrupt_target*> clint_targets {&core};
+	RealCLINT clint("CLINT", clint_targets);
 
 	MemoryDMI dmi = MemoryDMI::create_start_size_mapping(mem.data, opt.mem_start_addr, mem.size);
 	InstrMemoryProxy instr_mem(dmi, core);
@@ -85,13 +87,14 @@ int sc_main(int argc, char **argv) {
 		core_mem_if.dmi_ranges.emplace_back(dmi);
 	}
 
-	loader.load_executable_image(mem.data, mem.size, opt.mem_start_addr);
+	loader.load_executable_image(mem, mem.size, opt.mem_start_addr);
 	core.init(instr_mem_if, data_mem_if, &clint, loader.get_entrypoint(), rv32_align_address(opt.mem_end_addr));
 	sys.init(mem.data, opt.mem_start_addr, loader.get_heap_addr());
 	sys.register_core(&core);
 
 	if (opt.intercept_syscalls)
 		core.sys = &sys;
+	core.error_on_zero_traphandler = opt.error_on_zero_traphandler;
 
 	// setup port mapping
 	bus.ports[0] = new PortMapping(opt.mem_start_addr, opt.mem_end_addr);
@@ -104,9 +107,6 @@ int sc_main(int argc, char **argv) {
 	bus.isocks[0].bind(mem.tsock);
 	bus.isocks[1].bind(clint.tsock);
 	bus.isocks[2].bind(sys.tsock);
-
-	// connect interrupt signals/communication
-	clint.target_harts[0] = &core;
 
 	// switch for printing instructions
 	core.trace = opt.trace_mode;

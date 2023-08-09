@@ -30,7 +30,6 @@
 
 #include <system_error>
 
-#include <assert.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <termios.h>
@@ -43,11 +42,17 @@
 static int rawfd = -1;
 static struct termios orig_termios;
 
-static void sighandler(int num) {
-	(void)num;
-	assert(rawfd >= 0);
+static void reset_term(void) {
+	// Signal might arrive before enableRawMode()
+	if (rawfd < 0)
+		return;
 
 	disableRawMode(rawfd);
+}
+
+static void sighandler(int num) {
+	(void)num;
+	reset_term();
 	exit(EXIT_FAILURE);
 }
 
@@ -58,22 +63,28 @@ static void sethandler(void) {
 
 	act.sa_flags = 0;
 	act.sa_handler = sighandler;
-	if (sigemptyset(&act.sa_mask) == -1)
+	if (sigfillset(&act.sa_mask) == -1)
 		throw std::system_error(errno, std::generic_category());
 
 	for (i = 0; i < (sizeof(signals) / sizeof(signals[0])); i++) {
 		if (sigaction(signals[i], &act, NULL))
 			throw std::system_error(errno, std::generic_category());
 	}
+
+	/* also make sure we cleanup on exit(3) */
+	if (atexit(reset_term))
+		throw std::system_error(errno, std::generic_category());
 }
 
 void enableRawMode(int fd) {
 	struct termios raw;
 
-	if (!isatty(STDIN_FILENO)) {
-		errno = ENOTTY;
-		goto fatal;
-	}
+	// Check if rawm ode was already activated
+	if (rawfd >= 0)
+		return;
+
+	if (!isatty(STDIN_FILENO))
+		return; // not a tty, nothing to do
 
 	if (tcgetattr(fd, &orig_termios) == -1)
 		goto fatal;

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <boost/iostreams/device/mapped_file.hpp>
-
+#include <exception>
 #include <cstdint>
 #include <vector>
+
+#include "load_if.h"
 
 template <typename T>
 struct GenericElfLoader {
@@ -17,6 +19,12 @@ struct GenericElfLoader {
 	const char *filename;
 	boost::iostreams::mapped_file_source elf;
 	const Elf_Ehdr *hdr;
+
+	struct load_executable_exception : public std::exception {
+		const char * what () const throw () {
+			return "Tried loading invalid elf layout";
+		}
+	};
 
 	GenericElfLoader(const char *filename) : filename(filename), elf(filename) {
 		assert(elf.is_open() && "file not open");
@@ -34,41 +42,76 @@ struct GenericElfLoader {
 			if (p->p_type != T::PT_LOAD)
 				continue;
 
+			if ((p->p_filesz == 0) && (p->p_memsz == 0))
+				continue;
+
+			//If p_memsz is greater than p_filesz, the extra bytes are NOBITS.
+			// -> still, the memory needs to be zero initialized in this case!
+//			if (p->p_memsz > p->p_filesz)
+//				continue;
+
 			sections.push_back(p);
 		}
 
 		return sections;
 	}
 
-	void load_executable_image(uint8_t *dst, addr_t size, addr_t offset, bool use_vaddr = true) {
-		for (auto section : get_load_sections()) {
-			if (use_vaddr) {
-				assert((section->p_vaddr >= offset) && (section->p_vaddr + section->p_memsz < offset + size));
+	std::ostream& print_phdr(std::ostream& os, const Elf_Phdr& h, unsigned tabs = 0)
+	{
+		std::string tab(tabs, '\t');
+		os << tab << "p_type "  << h.p_type   << std::endl;
+		os << tab << "p_offset "<< h.p_offset << std::endl;
+		os << tab << "p_vaddr " << h.p_vaddr  << std::endl;
+		os << tab << "p_paddr " << h.p_paddr  << std::endl;
+		os << tab << "p_filesz "<< h.p_filesz << std::endl;
+		os << tab << "p_memsz " << h.p_memsz  << std::endl;
+		os << tab << "p_flags " << h.p_flags  << std::endl;
+		os << tab << "p_align " << h.p_align  << std::endl;
+	    return os;
+	}
 
-				// NOTE: if memsz is larger than filesz, the additional bytes are zero initialized (auto. done for
-				// memory)
-				memcpy(dst + section->p_vaddr - offset, elf.data() + section->p_offset, section->p_filesz);
-			} else {
-				if (section->p_filesz == 0) {
-					// skipping empty sections, we are 0 initialized
-					continue;
-				}
-				if (section->p_paddr < offset) {
-					std::cerr << "Section physical address 0x" << std::hex << section->p_paddr
-					          << " not in local offset (0x" << std::hex << offset << ")!" << std::endl;
-					// raise(std::runtime_error("elf cant be loaded"));
-				}
-				if (section->p_paddr + section->p_memsz >= offset + size) {
-					std::cerr << "Section would overlap memory (0x" << std::hex << section->p_paddr << " + 0x"
-					          << std::hex << section->p_memsz << ") >= 0x" << std::hex << offset + size << std::endl;
-					// raise(std::runtime_error("elf cant be loaded"));
-				}
-				assert((section->p_paddr >= offset) && (section->p_paddr + section->p_memsz < offset + size));
+	void load_executable_image(load_if &load_if, addr_t size, addr_t offset, bool use_vaddr = true) {
+		for (auto p : get_load_sections()) {
+			auto addr = p->p_paddr;
+			if (use_vaddr)
+				addr = p->p_vaddr;
 
-				// NOTE: if memsz is larger than filesz, the additional bytes are zero initialized (auto. done for
-				// memory)
-				memcpy(dst + section->p_paddr - offset, elf.data() + section->p_offset, section->p_filesz);
+			// If the modeled virtual platform separates Flash and DRAM
+			// (like the hifive-vp does) we call load_executable_image
+			// once for each memory segment (i.e. once for the Flash and
+			// once for the DRAM). As such, we must skip all ELF regions
+			// which are not covered by the passed memory segment.
+			if (!(addr >= offset && addr < (offset + size)))
+				continue;
+
+			if (addr < offset) {
+				std::cerr << "[elf_loader] ";
+				std::cerr << "Offset overlaps into section:" << std::endl;
+				std::cerr << "\t0x" << std::hex << +addr << " < " << +offset << std::endl;
+				print_phdr(std::cerr, *p, 2);
+				throw load_executable_exception();
 			}
+
+			if (addr + p->p_memsz >= offset + size) {
+				std::cerr << "[elf_loader] ";
+				std::cerr << "Section does not fit in target memory" << std::endl;
+				std::cerr << "\t0x" << std::hex << +addr << " + size 0x" << +p->p_memsz;
+				std::cerr << " would overflow offset 0x" << +offset << " + size 0x" << +size << std::endl;
+				print_phdr(std::cerr, *p, 2);
+				throw load_executable_exception();
+			}
+
+			auto idx = addr - offset;
+			const char *src = elf.data() + p->p_offset;
+			auto to_copy = p->p_filesz;
+
+			load_if.load_data(src, idx, to_copy);
+
+			assert (p->p_memsz >= p->p_filesz);
+			idx = idx + p->p_filesz;
+			to_copy = p->p_memsz - p->p_filesz;
+
+			load_if.load_zero(idx, to_copy);
 		}
 	}
 
@@ -138,19 +181,24 @@ struct GenericElfLoader {
         return p->st_value;
     }
 
-	const Elf_Shdr *get_section(const char *section_name) {
+	std::vector<const Elf_Shdr *> get_sections(void) {
 		if (hdr->e_shoff == 0) {
-			throw std::runtime_error("unable to find section address, section table not available: " +
-			                         std::string(section_name));
+			throw std::runtime_error("unable to find section address, section table not available");
 		}
 
-		const char *strings = get_section_string_table();
-
+		std::vector<const Elf_Shdr *> sections;
 		for (unsigned i = 0; i < hdr->e_shnum; ++i) {
 			const Elf_Shdr *s = reinterpret_cast<const Elf_Shdr *>(elf.data() + hdr->e_shoff + hdr->e_shentsize * i);
+			sections.push_back(s);
+		}
 
-			// std::cout << "check section: " << strings + s->sh_name << std::endl;
+		return sections;
+	}
 
+	const Elf_Shdr *get_section(const char *section_name) {
+		const char *strings = get_section_string_table();
+
+		for (auto s : get_sections()) {
 			if (!strcmp(strings + s->sh_name, section_name)) {
 				return s;
 			}

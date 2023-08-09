@@ -8,35 +8,75 @@
 
 #include <sys/types.h>
 
+/* character → control key */
+#define CTRL(c) ((c) & 0x1f)
+
+#define KEY_ESC  CTRL('a')  /* Ctrl-a (character to enter command mode) */
+#define KEY_EXIT 'x'        /* x (character to exit in command mode) */
+#define KEY_CEXIT CTRL(KEY_EXIT) /* Ctrl-x (character to exit in command mode) */
+
 UART::UART(const sc_core::sc_module_name& name, uint32_t irqsrc)
-		: AbstractUART(name, irqsrc) {
+		: FD_ABSTRACT_UART(name, irqsrc) {
+	// If stdin isn't a tty, it doesn't make much sense to poll from it.
+	// In this case, we will run the UART in write-only mode.
+	bool write_only = !isatty(STDIN_FILENO);
+
 	enableRawMode(STDIN_FILENO);
-	start_threads();
+	start_threads(STDIN_FILENO, write_only);
 }
 
 UART::~UART(void) {
+	stop_threads();
 	disableRawMode(STDIN_FILENO);
 }
 
-void UART::write_data(uint8_t data) {
-	ssize_t nwritten;
-
-	nwritten = write(STDOUT_FILENO, &data, sizeof(data));
-	if (nwritten == -1)
-		throw std::system_error(errno, std::generic_category());
-	else if (nwritten != sizeof(data))
-		throw std::runtime_error("short write");
-}
-
-void UART::read_data(void) {
+void UART::handle_input(int fd) {
 	uint8_t buf;
 	ssize_t nread;
 
-	nread = read(STDIN_FILENO, &buf, sizeof(buf));
+	nread = read(fd, &buf, sizeof(buf));
 	if (nread == -1)
 		throw std::system_error(errno, std::generic_category());
 	else if (nread != sizeof(buf))
 		throw std::runtime_error("short read");
 
-	rxpush(buf);
+	switch (state) {
+	case STATE_NORMAL:
+		if(buf != KEY_ESC)	// filter out first esc sequence
+			rxpush(buf);
+		break;
+	case STATE_COMMAND:
+		handle_cmd(buf);
+		break;
+	}
+
+	/* update state of input state machine for next run */
+	if (buf == KEY_ESC && state != STATE_COMMAND) {
+		state = STATE_COMMAND;
+	} else {
+		state = STATE_NORMAL;
+	}
+}
+
+void UART::handle_cmd(uint8_t cmd) {
+	switch (cmd) {
+	case KEY_ESC: /* double escape */
+		rxpush(cmd);
+		break;
+	case KEY_EXIT:
+	case KEY_CEXIT:
+		exit(EXIT_SUCCESS);
+		break;
+	default:
+		return; /* unknown command → ignore */
+	}
+}
+
+void UART::write_data(uint8_t data) {
+	ssize_t nwritten;
+	nwritten = write(STDOUT_FILENO, &data, sizeof(data));
+	if (nwritten == -1)
+		throw std::system_error(errno, std::generic_category());
+	else if (nwritten != sizeof(data))
+		throw std::runtime_error("short write");
 }

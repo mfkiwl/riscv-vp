@@ -1,55 +1,38 @@
-NPROCS:=$(shell grep -c ^processor /proc/cpuinfo)
+MAKEFLAGS += --no-print-directory
 
-vps: vp/src/core/common/gdb-mc/libgdb/mpc/mpc.c vp/dependencies/systemc-dist vp/dependencies/softfloat-dist vp/build/Makefile
-	make install -C vp/build -j$(NPROCS)
+# Whether to use a system-wide SystemC library instead of the vendored one.
+USE_SYSTEM_SYSTEMC ?= OFF
 
-vp/dependencies/systemc-dist:
-	cd vp/dependencies/ && ./build_systemc_233.sh
+vps: vp/src/core/common/gdb-mc/libgdb/mpc/mpc.c vp/build/Makefile
+	$(MAKE) install -C vp/build
 
-vp/dependencies/softfloat-dist:
-	cd vp/dependencies/ && ./build_softfloat.sh
-	
 vp/src/core/common/gdb-mc/libgdb/mpc/mpc.c:
 	git submodule update --init vp/src/core/common/gdb-mc/libgdb/mpc
 
-all: vps vp-display vp-breadboard
+all: vps vp-display
 
 vp/build/Makefile:
-	mkdir vp/build || true
-	cd vp/build && cmake ..
+	mkdir -p vp/build
+	cd vp/build && cmake -DUSE_SYSTEM_SYSTEMC=$(USE_SYSTEM_SYSTEMC) ..
 
 vp-eclipse:
-	mkdir vp-eclipse || true
+	mkdir -p vp-eclipse
 	cd vp-eclipse && cmake ../vp/ -G "Eclipse CDT4 - Unix Makefiles"
 
 env/basic/vp-display/build/Makefile:
-	mkdir env/basic/vp-display/build || true
+	mkdir -p env/basic/vp-display/build
 	cd env/basic/vp-display/build && cmake ..
 
 vp-display: env/basic/vp-display/build/Makefile
-	make -C  env/basic/vp-display/build -j$(NPROCS)
-
-env/hifive/vp-breadboard/build/Makefile:
-	mkdir env/hifive/vp-breadboard/build || true
-	cd env/hifive/vp-breadboard/build && cmake ..
-
-vp-breadboard: env/hifive/vp-breadboard/build/Makefile
-	make -C  env/hifive/vp-breadboard/build -j$(NPROCS)
+	$(MAKE) -C env/basic/vp-display/build
 
 vp-clean:
 	rm -rf vp/build
 
 qt-clean:
 	rm -rf env/basic/vp-display/build
-	rm -rf env/hifive/vp-breadboard/build
 
-sysc-clean:
-	rm -rf vp/dependencies/systemc*
-
-softfloat-clean:
-	rm -rf vp/dependencies/softfloat-dist
-
-clean-all: vp-clean qt-clean sysc-clean softfloat-clean
+clean-all: vp-clean qt-clean
 
 clean: vp-clean
 

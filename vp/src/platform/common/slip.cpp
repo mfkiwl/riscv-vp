@@ -25,7 +25,7 @@
 #define SLIP_ESC_END 0334
 #define SLIP_ESC_ESC 0335
 
-SLIP::SLIP(const sc_core::sc_module_name &name, uint32_t irqsrc, std::string netdev) : AbstractUART(name, irqsrc) {
+SLIP::SLIP(const sc_core::sc_module_name &name, uint32_t irqsrc, std::string netdev) : FD_ABSTRACT_UART(name, irqsrc) {
 	tunfd = open("/dev/net/tun", O_RDWR);
 	if (tunfd == -1)
 		goto err0;
@@ -44,14 +44,31 @@ SLIP::SLIP(const sc_core::sc_module_name &name, uint32_t irqsrc, std::string net
 	if (!(rcvbuf = (uint8_t *)malloc(rcvsiz * sizeof(uint8_t))))
 		goto err2;
 
-	start_threads();
+	start_threads(tunfd);
 	return;
 err2:
 	free(sndbuf);
+	sndbuf = NULL;
 err1:
 	close(tunfd);
 err0:
 	std::system_error(errno, std::generic_category());
+}
+
+SLIP::~SLIP(void) {
+	stop_threads();
+
+	if (sndbuf) {
+		free(sndbuf);
+		sndbuf = NULL;
+	}
+	if (rcvbuf) {
+		free(rcvbuf);
+		rcvbuf = NULL;
+	}
+
+	if (tunfd > 0)
+		close(tunfd);
 }
 
 int SLIP::get_mtu(const char *dev) {
@@ -86,6 +103,29 @@ void SLIP::send_packet(void) {
 	sndsiz = 0;
 }
 
+void SLIP::handle_input(int fd) {
+	ssize_t ret = read(fd, rcvbuf, rcvsiz);
+	if (ret <= -1)
+		throw std::system_error(errno, std::generic_category());
+
+	for (size_t i = 0; i < static_cast<size_t>(ret); i++) {
+		switch (rcvbuf[i]) {
+			case SLIP_END:
+				rxpush(SLIP_ESC);
+				rxpush(SLIP_ESC_END);
+				break;
+			case SLIP_ESC:
+				rxpush(SLIP_ESC);
+				rxpush(SLIP_ESC_ESC);
+				break;
+			default:
+				rxpush(rcvbuf[i]);
+				break;
+		}
+	}
+	rxpush(SLIP_END);
+}
+
 void SLIP::write_data(uint8_t data) {
 	if (data == SLIP_END) {
 		if (sndsiz > 0)
@@ -110,27 +150,4 @@ void SLIP::write_data(uint8_t data) {
 			throw std::system_error(errno, std::generic_category());
 	}
 	sndbuf[sndsiz++] = data;
-}
-
-void SLIP::read_data(void) {
-	ssize_t ret = read(tunfd, rcvbuf, rcvsiz);
-	if (ret == -1)
-		throw std::system_error(errno, std::generic_category());
-
-	for (size_t i = 0; i < (size_t)ret; i++) {
-		switch (rcvbuf[i]) {
-			case SLIP_END:
-				rxpush(SLIP_ESC);
-				rxpush(SLIP_ESC_END);
-				break;
-			case SLIP_ESC:
-				rxpush(SLIP_ESC);
-				rxpush(SLIP_ESC_ESC);
-				break;
-			default:
-				rxpush(rcvbuf[i]);
-				break;
-		}
-	}
-	rxpush(SLIP_END);
 }

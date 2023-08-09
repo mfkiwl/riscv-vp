@@ -144,7 +144,7 @@ int sc_main(int argc, char **argv) {
 	if (opt.entry_point.available)
 		entry_point = opt.entry_point.value;
 
-	loader.load_executable_image(mem.data, mem.size, opt.mem_start_addr);
+	loader.load_executable_image(mem, mem.size, opt.mem_start_addr);
 	sys.init(mem.data, opt.mem_start_addr, loader.get_heap_addr());
 	for (size_t i = 0; i < NUM_CORES; i++) {
 		cores[i]->init(opt.use_data_dmi, opt.use_instr_dmi, &clint, entry_point, rv64_align_address(opt.mem_end_addr));
@@ -199,7 +199,7 @@ int sc_main(int argc, char **argv) {
 		cores[i]->iss.regs[RegFile::a1] = opt.dtb_rom_start_addr;
 
 		// configure supported instructions
-		cores[i]->iss.csrs.misa.extensions |= cores[i]->iss.csrs.misa.M | cores[i]->iss.csrs.misa.A |
+		cores[i]->iss.csrs.misa.fields.extensions |= cores[i]->iss.csrs.misa.M | cores[i]->iss.csrs.misa.A |
 			cores[i]->iss.csrs.misa.F | cores[i]->iss.csrs.misa.D;
 	}
 

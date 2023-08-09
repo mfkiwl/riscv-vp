@@ -1,14 +1,15 @@
 add_executable(hifive-vp
         hifive_main.cpp
         can.cpp
-        oled.cpp
-        gpio.cpp
-        gpio/gpiocommon.cpp
-        gpio/gpio-server.cpp
-        ../../util/elegantEnums.cpp #sorry :(
         oled/common.cpp
+        oled/oled.cpp
+        gpio.cpp
+        tunnel-uart.cpp
+        ../../util/elegantEnums.cpp #sorry :(
         ${HEADERS})
 
-target_link_libraries(hifive-vp rv32 platform-common gdb-mc ${Boost_LIBRARIES} ${SystemC_LIBRARIES} pthread)
+add_git_submodule(vbb-protocol)
+
+target_link_libraries(hifive-vp virtual-breadboard-server rv32 platform-common gdb-mc ${Boost_LIBRARIES} systemc pthread)
 
 INSTALL(TARGETS hifive-vp RUNTIME DESTINATION bin)

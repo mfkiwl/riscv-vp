@@ -13,14 +13,14 @@
 #include "iss.h"
 #include "mem.h"
 #include "memory.h"
-#include "mram.h"
+#include "memory_mapped_file.h"
 #include "sensor.h"
 #include "sensor2.h"
 #include "syscall.h"
-#include "terminal.h"
+#include "uart.h"
 #include "util/options.h"
 #include "platform/common/options.h"
-
+#include "platform/common/terminal.h"
 #include "gdb-mc/gdb_server.h"
 #include "gdb-mc/gdb_runner.h"
 
@@ -28,6 +28,7 @@
 #include <boost/program_options.hpp>
 #include <iomanip>
 #include <iostream>
+
 
 using namespace rv32;
 namespace po = boost::program_options;
@@ -51,6 +52,8 @@ public:
 	addr_t sys_end_addr = 0x020103ff;
 	addr_t term_start_addr = 0x20000000;
 	addr_t term_end_addr = term_start_addr + 16;
+	addr_t uart_start_addr = 0x20010000;
+	addr_t uart_end_addr = uart_start_addr + 0xfff;
 	addr_t ethernet_start_addr = 0x30000000;
 	addr_t ethernet_end_addr = ethernet_start_addr + 1500;
 	addr_t plic_start_addr = 0x40000000;
@@ -69,6 +72,7 @@ public:
 	addr_t display_start_addr = 0x72000000;
 	addr_t display_end_addr = display_start_addr + Display::addressRange;
 
+	bool quiet = false;
 	bool use_E_base_isa = false;
 
 	OptionValue<unsigned long> entry_point;
@@ -76,6 +80,7 @@ public:
 	BasicOptions(void) {
         	// clang-format off
 		add_options()
+			("quiet", po::bool_switch(&quiet), "do not output register values on exit")
 			("memory-start", po::value<unsigned int>(&mem_start_addr),"set memory start address")
 			("memory-size", po::value<unsigned int>(&mem_size), "set memory size")
 			("use-E-base-isa", po::bool_switch(&use_E_base_isa), "use the E instead of the I integer base ISA")
@@ -86,6 +91,13 @@ public:
 			("network-device", po::value<std::string>(&network_device)->default_value(""),"name of the tap network adapter, e.g. /dev/tap6")
 			("signature", po::value<std::string>(&test_signature)->default_value(""),"output filename for the test execution signature");
         	// clang-format on
+	};
+
+	void printValues(std::ostream& os) const override {
+		os << std::hex;
+		os << "mem_start_addr:\t" << +mem_start_addr << std::endl;
+		os << "mem_end_addr:\t"   << +mem_end_addr   << std::endl;
+		static_cast <const Options&>( *this ).printValues(os);
 	}
 
 	void parse(int argc, char **argv) override {
@@ -100,6 +112,7 @@ public:
 	}
 };
 
+
 int sc_main(int argc, char **argv) {
 	BasicOptions opt;
 	opt.parse(argc, argv);
@@ -111,8 +124,9 @@ int sc_main(int argc, char **argv) {
 	ISS core(0, opt.use_E_base_isa);
 	SimpleMemory mem("SimpleMemory", opt.mem_size);
 	SimpleTerminal term("SimpleTerminal");
+	UART uart("Generic_UART", 6);
 	ELFLoader loader(opt.input_program.c_str());
-	SimpleBus<3, 12> bus("SimpleBus");
+	SimpleBus<3, 13> bus("SimpleBus");
 	CombinedMemoryInterface iss_mem_if("MemoryInterface", core);
 	SyscallHandler sys("SyscallHandler");
 	FE310_PLIC<1, 64, 96, 32> plic("PLIC");
@@ -120,7 +134,7 @@ int sc_main(int argc, char **argv) {
 	SimpleSensor sensor("SimpleSensor", 2);
 	SimpleSensor2 sensor2("SimpleSensor2", 5);
 	BasicTimer timer("BasicTimer", 3);
-	SimpleMRAM mram("SimpleMRAM", opt.mram_image, opt.mram_size);
+	MemoryMappedFile mram("MRAM", opt.mram_image, opt.mram_size);
 	SimpleDMA dma("SimpleDMA", 4);
 	Flashcontroller flashController("Flashcontroller", opt.flash_device);
 	EthernetDevice ethernet("EthernetDevice", 7, mem.data, opt.network_device);
@@ -144,28 +158,44 @@ int sc_main(int argc, char **argv) {
 	uint64_t entry_point = loader.get_entrypoint();
 	if (opt.entry_point.available)
 		entry_point = opt.entry_point.value;
-
-	loader.load_executable_image(mem.data, mem.size, opt.mem_start_addr);
-	core.init(instr_mem_if, data_mem_if, &clint, entry_point, rv32_align_address(opt.mem_end_addr));
+	try {
+		loader.load_executable_image(mem, mem.size, opt.mem_start_addr);
+	} catch(ELFLoader::load_executable_exception& e) {
+		std::cerr << e.what() << std::endl;
+		std::cerr << "Memory map: " << std::endl;
+		opt.printValues(std::cerr);
+		return -1;
+	}
+	/*
+	 * The rv32 calling convention defaults to 32 bit, but as this Config is
+	 * mainly used together with the syscall handler, this helps for certain floats.
+	 * https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc
+	 */
+	core.init(instr_mem_if, data_mem_if, &clint, entry_point, rv64_align_address(opt.mem_end_addr));
 	sys.init(mem.data, opt.mem_start_addr, loader.get_heap_addr());
 	sys.register_core(&core);
 
 	if (opt.intercept_syscalls)
 		core.sys = &sys;
+	core.error_on_zero_traphandler = opt.error_on_zero_traphandler;
 
 	// address mapping
-	bus.ports[0] = new PortMapping(opt.mem_start_addr, opt.mem_end_addr);
-	bus.ports[1] = new PortMapping(opt.clint_start_addr, opt.clint_end_addr);
-	bus.ports[2] = new PortMapping(opt.plic_start_addr, opt.plic_end_addr);
-	bus.ports[3] = new PortMapping(opt.term_start_addr, opt.term_end_addr);
-	bus.ports[4] = new PortMapping(opt.sensor_start_addr, opt.sensor_end_addr);
-	bus.ports[5] = new PortMapping(opt.dma_start_addr, opt.dma_end_addr);
-	bus.ports[6] = new PortMapping(opt.sensor2_start_addr, opt.sensor2_end_addr);
-	bus.ports[7] = new PortMapping(opt.mram_start_addr, opt.mram_end_addr);
-	bus.ports[8] = new PortMapping(opt.flash_start_addr, opt.flash_end_addr);
-	bus.ports[9] = new PortMapping(opt.ethernet_start_addr, opt.ethernet_end_addr);
-	bus.ports[10] = new PortMapping(opt.display_start_addr, opt.display_end_addr);
-	bus.ports[11] = new PortMapping(opt.sys_start_addr, opt.sys_end_addr);
+	{
+		unsigned it = 0;
+		bus.ports[it++] = new PortMapping(opt.mem_start_addr, opt.mem_end_addr);
+		bus.ports[it++] = new PortMapping(opt.clint_start_addr, opt.clint_end_addr);
+		bus.ports[it++] = new PortMapping(opt.plic_start_addr, opt.plic_end_addr);
+		bus.ports[it++] = new PortMapping(opt.term_start_addr, opt.term_end_addr);
+		bus.ports[it++] = new PortMapping(opt.uart_start_addr, opt.uart_end_addr);
+		bus.ports[it++] = new PortMapping(opt.sensor_start_addr, opt.sensor_end_addr);
+		bus.ports[it++] = new PortMapping(opt.dma_start_addr, opt.dma_end_addr);
+		bus.ports[it++] = new PortMapping(opt.sensor2_start_addr, opt.sensor2_end_addr);
+		bus.ports[it++] = new PortMapping(opt.mram_start_addr, opt.mram_end_addr);
+		bus.ports[it++] = new PortMapping(opt.flash_start_addr, opt.flash_end_addr);
+		bus.ports[it++] = new PortMapping(opt.ethernet_start_addr, opt.ethernet_end_addr);
+		bus.ports[it++] = new PortMapping(opt.display_start_addr, opt.display_end_addr);
+		bus.ports[it++] = new PortMapping(opt.sys_start_addr, opt.sys_end_addr);
+	}
 
 	// connect TLM sockets
 	iss_mem_if.isock.bind(bus.tsocks[0]);
@@ -176,18 +206,22 @@ int sc_main(int argc, char **argv) {
 	dma.isock.bind(dma_connector.tsock);
 	dma_connector.bus_lock = bus_lock;
 
-	bus.isocks[0].bind(mem.tsock);
-	bus.isocks[1].bind(clint.tsock);
-	bus.isocks[2].bind(plic.tsock);
-	bus.isocks[3].bind(term.tsock);
-	bus.isocks[4].bind(sensor.tsock);
-	bus.isocks[5].bind(dma.tsock);
-	bus.isocks[6].bind(sensor2.tsock);
-	bus.isocks[7].bind(mram.tsock);
-	bus.isocks[8].bind(flashController.tsock);
-	bus.isocks[9].bind(ethernet.tsock);
-	bus.isocks[10].bind(display.tsock);
-	bus.isocks[11].bind(sys.tsock);
+	{
+		unsigned it = 0;
+		bus.isocks[it++].bind(mem.tsock);
+		bus.isocks[it++].bind(clint.tsock);
+		bus.isocks[it++].bind(plic.tsock);
+		bus.isocks[it++].bind(term.tsock);
+		bus.isocks[it++].bind(uart.tsock);
+		bus.isocks[it++].bind(sensor.tsock);
+		bus.isocks[it++].bind(dma.tsock);
+		bus.isocks[it++].bind(sensor2.tsock);
+		bus.isocks[it++].bind(mram.tsock);
+		bus.isocks[it++].bind(flashController.tsock);
+		bus.isocks[it++].bind(ethernet.tsock);
+		bus.isocks[it++].bind(display.tsock);
+		bus.isocks[it++].bind(sys.tsock);
+	}
 
 	// connect interrupt signals/communication
 	plic.target_harts[0] = &core;
@@ -209,9 +243,11 @@ int sc_main(int argc, char **argv) {
 		new DirectCoreRunner(core);
 	}
 
+	if (opt.quiet)
+		sc_core::sc_report_handler::set_verbosity_level(sc_core::SC_NONE);
 	sc_core::sc_start();
-
-	core.show();
+	if (!opt.quiet)
+		core.show();
 
 	if (opt.test_signature != "") {
 		auto begin_sig = loader.get_begin_signature_address();

@@ -123,7 +123,7 @@ int sc_main(int argc, char **argv) {
         core_mem_if.dmi_ranges.emplace_back(dmi);
     }
 
-    loader.load_executable_image(mem.data, mem.size, opt.mem_start_addr);
+    loader.load_executable_image(mem, mem.size, opt.mem_start_addr);
     core.init(instr_mem_if, data_mem_if, &clint, loader.get_entrypoint(), rv32_align_address(opt.mem_end_addr));
     sys.init(mem.data, opt.mem_start_addr, loader.get_heap_addr());
     sys.register_core(&core);
@@ -180,25 +180,25 @@ int sc_main(int argc, char **argv) {
 
     {
         std::transform(opt.isa.begin(), opt.isa.end(), opt.isa.begin(), ::toupper);
-        core.csrs.misa.extensions = core.csrs.misa.I;
+        core.csrs.misa.fields.extensions = core.csrs.misa.I;
         if (opt.isa.find('G') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.M | core.csrs.misa.A | core.csrs.misa.F | core.csrs.misa.D;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.M | core.csrs.misa.A | core.csrs.misa.F | core.csrs.misa.D;
         if (opt.isa.find('M') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.M;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.M;
         if (opt.isa.find('A') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.A;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.A;
         if (opt.isa.find('C') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.C;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.C;
         if (opt.isa.find('F') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.F;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.F;
         if (opt.isa.find('D') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.D;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.D;
         if (opt.isa.find('N') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.N;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.N;
         if (opt.isa.find('U') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.U;
+            core.csrs.misa.fields.extensions |= core.csrs.misa.U;
         if (opt.isa.find('S') != std::string::npos)
-            core.csrs.misa.extensions |= core.csrs.misa.S | core.csrs.misa.U; // NOTE: S mode implies U mode
+            core.csrs.misa.fields.extensions |= core.csrs.misa.S | core.csrs.misa.U; // NOTE: S mode implies U mode
     }
 
     sc_core::sc_start();

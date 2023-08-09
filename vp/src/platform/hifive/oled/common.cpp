@@ -36,11 +36,13 @@ State* getSharedState()
 		}
 	}
 
-	State* ret = reinterpret_cast<State*>(shmat(shmid, nullptr, 0));
-	if (ret == nullptr) {
+	void *addr = shmat(shmid, nullptr, 0);
+	if (addr == nullptr) {
 		perror("shmat");
+		return nullptr;
 	}
-	return ret;
+
+	return reinterpret_cast<State*>(addr);
 }
 
 

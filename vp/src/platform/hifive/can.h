@@ -9,7 +9,7 @@
 #include <functional>
 #include <thread>
 
-class CAN : public SpiInterface {
+class CAN  {
 	enum class State {
 		init,
 		readRegister,
@@ -50,18 +50,18 @@ class CAN : public SpiInterface {
 					uint8_t id[4];
 					struct {
 						/*
-						 *	MCP_SIDH        0
+						    MCP_SIDH        0
 						    MCP_SIDL        1
 						    MCP_EID8        2
-						    MCP_EID0		3
+						    MCP_EID0        3
 						 */
 						uint16_t sid;
 						uint16_t eid;
-					};
+					} fields;
 				};
 				uint8_t length;
 				uint8_t payload[CANFD_MAX_DLEN];
-			};
+			} fields;
 		};
 	};
 
@@ -76,11 +76,11 @@ class CAN : public SpiInterface {
 
 	volatile bool stop;
 
-   public:
+public:
 	CAN();
 	~CAN();
 
-	uint8_t write(uint8_t byte) override;
+	uint8_t write(uint8_t byte);
 
 	const char* registerName(uint8_t id);
 	const char* regValueName(uint8_t id);

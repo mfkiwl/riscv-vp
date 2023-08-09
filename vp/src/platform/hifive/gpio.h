@@ -2,8 +2,10 @@
 
 #include "platform/common/async_event.h"
 #include "core/common/irq_if.h"
-#include "gpio/gpio-server.hpp"
+#include <gpio-server.hpp>
 #include "util/tlm_map.h"
+#include "spi.h"
+#include "tunnel-uart.hpp"
 
 #include <tlm_utils/simple_target_socket.h>
 #include <systemc>
@@ -13,10 +15,10 @@ struct GPIO : public sc_core::sc_module {
 	tlm_utils::simple_target_socket<GPIO> tsock;
 
 	// memory mapped configuration registers
-	uint32_t value = 0;
+	uint32_t value = 0;		// Current state of pin, input or output
 	uint32_t input_en = 0;
 	uint32_t output_en = 0;
-	uint32_t port = 0;
+	uint32_t port = 0;		// Desired output values of enabled pins
 	uint32_t pullup_en = 0;
 	uint32_t pin_drive_strength = 0;
 	uint32_t rise_intr_en = 0;
@@ -54,9 +56,10 @@ struct GPIO : public sc_core::sc_module {
 	vp::map::LocalRouter router = {"GPIO"};
 	interrupt_gateway *plic = nullptr;
 
+	static constexpr gpio::PinNumber available_pins = 32;
 	const unsigned int_gpio_base;
 	GpioServer server;
-	std::thread serverThread;
+	std::thread *serverThread;
 	AsyncEvent asyncEvent;
 
 	SC_HAS_PROCESS(GPIO);
@@ -67,6 +70,13 @@ struct GPIO : public sc_core::sc_module {
 
 	void transport(tlm::tlm_generic_payload &trans, sc_core::sc_time &delay);
 
-	void asyncOnchange(uint8_t bit, GpioCommon::Tristate val);
+	bool isServerConnected();
+
+	void asyncOnchange(gpio::PinNumber bit, gpio::Tristate val);
 	void synchronousChange();
+
+	UartTXFunction getUartTransmitFunction(gpio::PinNumber tx);
+	void registerUartReceiveFunction(gpio::PinNumber rx, UartRXFunction);
+
+	SpiWriteFunction getSPIwriteFunction(gpio::PinNumber cs);
 };

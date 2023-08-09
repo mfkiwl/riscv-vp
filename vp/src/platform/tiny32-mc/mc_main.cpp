@@ -80,7 +80,7 @@ int sc_main(int argc, char **argv) {
 	bus.ports[1] = new PortMapping(opt.clint_start_addr, opt.clint_end_addr);
 	bus.ports[2] = new PortMapping(opt.sys_start_addr, opt.sys_end_addr);
 
-	loader.load_executable_image(mem.data, mem.size, opt.mem_start_addr);
+	loader.load_executable_image(mem, mem.size, opt.mem_start_addr);
 
 	core0.init(&core0_mem_if, &core0_mem_if, &clint, loader.get_entrypoint(),
 	           opt.mem_end_addr - 3);  // -3 to not overlap with the next region and stay 32 bit aligned
@@ -94,6 +94,8 @@ int sc_main(int argc, char **argv) {
 		core0.sys = &sys;
 		core1.sys = &sys;
 	}
+	core0.error_on_zero_traphandler = opt.error_on_zero_traphandler;
+	core1.error_on_zero_traphandler = opt.error_on_zero_traphandler;
 
 	// connect TLM sockets
 	core0_mem_if.isock.bind(bus.tsocks[0]);
